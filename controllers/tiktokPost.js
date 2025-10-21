@@ -75,7 +75,7 @@ exports.fetchTikTokPosts = async (req, res) => {
         cover:
           v.video?.cover ||
           v.video?.originCover ||
-          v.coverr ||
+          v.cover ||
           v.thumbnail ||
           null,
       })),
