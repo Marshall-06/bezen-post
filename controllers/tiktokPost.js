@@ -2,55 +2,112 @@ const axios = require("axios");
 const Post = require("../models/post"); // Capitalized for consistency
 
 exports.fetchTikTokPosts = async (req, res) => {
-  const { username } = req.body;
-
-  if (!username) {
-    return res.status(400).json({ message: "Username required" });
-  }
+  const username = req.params.username.trim().toLowerCase();
 
   try {
-    // 1️⃣ Fetch TikTok user info
-    const userInfoRes = await axios.get(`${process.env.TIKAPI_BASE}/user/info/`, {
-      params: { username },
-      headers: { "X-API-KEY": process.env.TIKAPI_KEY },
+    // Step 1️⃣: Get user info
+    const userInfoRes = await axios.get("https://tiktok-scraper7.p.rapidapi.com/user/info", {
+      headers: {
+        "X-RapidAPI-Key": process.env.TIKTOK_RAPIDAPI_KEY,
+        "X-RapidAPI-Host": "tiktok-scraper7.p.rapidapi.com",
+      },
+      params: { unique_id: username },
     });
 
-    const secUid = userInfoRes.data?.user?.secUid;
-    if (!secUid) {
-      return res.status(404).json({ message: "User not found" });
+    const user_id = userInfoRes.data?.data?.user?.id;
+    if (!user_id) {
+      return res.status(404).json({ message: `TikTok user '${username}' not found` });
     }
 
-    // 2️⃣ Fetch last 10 TikTok posts
-    const postsRes = await axios.get(`${process.env.TIKAPI_BASE}/user/posts/`, {
-      params: { secUid, count: 10 },
-      headers: { "X-API-KEY": process.env.TIKAPI_KEY },
+    // Step 2️⃣: Get posts
+    const postsRes = await axios.get("https://tiktok-scraper7.p.rapidapi.com/user/posts", {
+      headers: {
+        "X-RapidAPI-Key": process.env.TIKTOK_RAPIDAPI_KEY,
+        "X-RapidAPI-Host": "tiktok-scraper7.p.rapidapi.com",
+      },
+      params: { user_id, count: 10, cursor: 0 },
     });
 
-    const posts = postsRes.data?.items || [];
+    // Step 3️⃣: Extract safely
+    const videos =
+      postsRes.data?.data?.videos ||
+      postsRes.data?.data?.aweme_list ||
+      postsRes.data?.videos ||
+      [];
 
-    // 3️⃣ Save to database (parallelized with Promise.all)
-    const saved = await Promise.all(
-      posts.map(async (item) => {
-        return await Post.create({
-          username,
-          caption: item.desc || "",
-          mediaUrl: item.video?.playAddr || "",
-          thumbnail: item.video?.cover || "",
-          source: "tiktok",
-          postedAt: new Date(item.createTime * 1000),
-        });
-      })
-    );
-
+    // Step 4️⃣: Return mapped data
     res.json({
-      message: `${saved.length} TikTok posts saved successfully`,
-      posts: saved,
+      platform: "TikTok",
+      username,
+      user_id,
+      post_count: videos.length,
+      posts: videos.map((v) => ({
+        id: v.id || v.video_id || v.aweme_id || null,
+        description: v.desc || v.caption || v.title || "",
+        create_time: v.createTime || v.create_time || null,
+        play_count:
+          v.stats?.playCount ??
+          v.statistics?.play_count ??
+          v.playCount ??
+          null,
+        like_count:
+          v.stats?.diggCount ??
+          v.statistics?.digg_count ??
+          v.likeCount ??
+          null,
+        comment_count:
+          v.stats?.commentCount ??
+          v.statistics?.comment_count ??
+          v.commentCount ??
+          null,
+        share_count:
+          v.stats?.shareCount ??
+          v.statistics?.share_count ??
+          v.shareCount ??
+          null,
+        video_url:
+          v.video?.playAddr ||
+          v.video?.playAddrH265 ||
+          v.video?.url ||
+          v.videoUrl ||
+          v.video?.downloadAddr ||
+          null,
+        cover:
+          v.video?.cover ||
+          v.video?.originCover ||
+          v.cover ||
+          v.thumbnail ||
+          null,
+      })),
     });
   } catch (err) {
-    console.error(err.response?.data || err.message);
-    res.status(500).json({
+    console.error("TikTok RapidAPI error:", err.response?.data || err.message);
+    res.status(err.response?.status || 500).json({
       message: "Failed to fetch TikTok posts",
       error: err.response?.data || err.message,
     });
   }
+  // const username = req.params.username;
+  
+  //   try {
+  //     const response = await axios.get('https://tiktok-scraper7.p.rapidapi.com/user/info', {
+  //       headers: {
+  //         'X-RapidAPI-Key': process.env.TIKTOK_RAPIDAPI_KEY,
+  //         'X-RapidAPI-Host': process.env.TIKTOK_RAPIDAPI_HOST,
+  //       },
+  //       params: {
+  //         username,
+  //         count: 10, 
+  //       },
+  //     });
+  
+  //     res.json(response.data);
+  //   } catch (err) {
+  //     console.error('RapidAPI error:', err.response?.data || err.message);
+  //     res.status(err.response?.status || 500).json({
+  //       message: 'Failed to fetch Instagram posts',
+  //       error: err.response?.data || err.message,
+  //     });
+  //   }
+
 };

@@ -1,52 +1,29 @@
 const axios = require("axios");
 const Post = require("../models/post"); // adjust path if needed
 
-// Define the controller function
 const fetchInstagramPosts = async (req, res) => {
-  const { username } = req.body;
-
-  if (!username) {
-    return res.status(400).json({ message: "Username required" });
-  }
+  const username = req.params.username;
 
   try {
-    // 1️⃣ Fetch Instagram posts (via RapidAPI)
-    const response = await axios.get(`${process.env.INSTAGRAM_BASE}/userposts`, {
-      params: { username },
+    const response = await axios.get('https://instagram-scraper21.p.rapidapi.com/api/v1/posts', {
       headers: {
-        "X-RapidAPI-Key": process.env.INSTAGRAM_KEY,
-        "X-RapidAPI-Host": "instagram-scraper-api2.p.rapidapi.com",
+        'X-RapidAPI-Key': process.env.RAPIDAPI_KEY,
+        'X-RapidAPI-Host': process.env.RAPIDAPI_HOST,
+      },
+      params: {
+        username,
+        count: 10, 
       },
     });
 
-    const posts = response.data?.data?.slice(0, 10) || [];
-
-    // 2️⃣ Save to database
-    const saved = await Promise.all(
-      posts.map(async (item) => {
-        return await Post.create({
-          username,
-          caption: item.caption || "",
-          mediaUrl: item.thumbnail_url || item.display_url,
-          thumbnail: item.thumbnail_url || item.display_url,
-          source: "instagram",
-          postedAt: new Date(item.taken_at_timestamp * 1000),
-        });
-      })
-    );
-
-    res.json({
-      message: `${saved.length} Instagram posts saved successfully`,
-      posts: saved,
-    });
+    res.json(response.data);
   } catch (err) {
-    console.error(err.response?.data || err.message);
-    res.status(500).json({
-      message: "Failed to fetch Instagram posts",
+    console.error('RapidAPI error:', err.response?.data || err.message);
+    res.status(err.response?.status || 500).json({
+      message: 'Failed to fetch Instagram posts',
       error: err.response?.data || err.message,
     });
   }
 };
 
-// ✅ Export properly
 module.exports = { fetchInstagramPosts };
