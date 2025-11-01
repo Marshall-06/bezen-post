@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Social Media Downloader</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-50 min-h-screen flex flex-col items-center py-10">
+  <div class="w-full max-w-4xl bg-white rounded-2xl shadow p-6">
+    <header class="mb-6 text-center">
+      <h1 class="text-3xl font-bold text-slate-800">Social Media Downloader</h1>
+      <p class="text-gray-500 mt-2 text-sm">
+        Enter an Instagram or TikTok username to preview public content.
+      </p>
+    </header>
+
+    <!-- Search Form -->
+    <form id="searchForm" class="flex flex-col md:flex-row gap-3 mb-6">
+      <select id="platform" class="border rounded-lg p-2 w-full md:w-1/5">
+        <option value="instagram">Instagram</option>
+        <option value="tiktok">TikTok</option>
+      </select>
+      <input
+        id="username"
+        type="text"
+        placeholder="Enter username (e.g. natgeo)"
+        class="border rounded-lg p-2 flex-1"
+      />
+      <button
+        type="submit"
+        class="bg-slate-700 text-white px-6 py-2 rounded-lg hover:bg-slate-800 transition"
+      >
+        Search
+      </button>
+    </form>
+
+    <div id="error" class="hidden text-red-600 text-sm mb-4"></div>
+
+    <!-- Profile Section -->
+    <section id="profileSection" class="hidden mb-6 p-4 border rounded-lg flex items-center gap-4">
+      <img id="profileAvatar" src="" alt="avatar" class="w-20 h-20 rounded-full object-cover border" />
+      <div>
+        <div id="profileName" class="text-lg font-semibold"></div>
+        <div id="profileHandle" class="text-gray-500 text-sm"></div>
+        <p id="profileBio" class="text-sm mt-1"></p>
+      </div>
+    </section>
+
+    <!-- Media Grid -->
+    <section id="mediaGrid" class="hidden">
+      <h2 class="text-lg font-semibold mb-3">Media</h2>
+      <div id="mediaContainer" class="grid grid-cols-2 md:grid-cols-4 gap-3"></div>
+    </section>
+  </div>
+
+  <!-- Preview Modal -->
+  <div id="previewModal" class="hidden fixed inset-0 bg-black/60 flex items-center justify-center p-4">
+    <div class="bg-white rounded-2xl p-4 max-w-3xl w-full shadow-lg">
+      <div class="flex justify-between items-start mb-3">
+        <div>
+          <h3 class="text-xl font-semibold">Preview</h3>
+          <p id="previewCaption" class="text-gray-600 text-sm"></p>
+        </div>
+        <button onclick="closeModal()" class="px-3 py-1 rounded border">Close</button>
+      </div>
+      <div class="bg-gray-100 h-96 flex items-center justify-center rounded-lg overflow-hidden">
+        <img id="previewImage" src="" alt="Preview" class="object-contain max-h-full" />
+      </div>
+      <div class="mt-4 flex gap-3">
+        <a
+          id="openPlatformBtn"
+          target="_blank"
+          rel="noopener noreferrer"
+          class="border px-5 py-2 rounded text-center"
+        >
+          Open on Platform
+        </a>
+      </div>
+    </div>
+  </div>
+
+  <footer class="mt-10 text-center text-xs text-gray-500 max-w-xl">
+    <p>
+      <strong>Disclaimer:</strong> This frontend communicates only with your backend API.
+      The backend must use official APIs (Instagram Graph API, TikTok for Developers) and comply
+      with all platform terms of service.
+    </p>
+  </footer>
+
+  <script>
+    const API_BASE = "http://localhost:8000"; // your backend base URL
+
+    const form = document.getElementById("searchForm");
+    const usernameInput = document.getElementById("username");
+    const platformSelect = document.getElementById("platform");
+    const errorBox = document.getElementById("error");
+    const profileSection = document.getElementById("profileSection");
+    const mediaGrid = document.getElementById("mediaGrid");
+    const mediaContainer = document.getElementById("mediaContainer");
+
+    let mediaList = [];
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const username = usernameInput.value.trim();
+      const platform = platformSelect.value;
+
+      if (!username) return showError("Please enter a username.");
+
+      hideError();
+      resetDisplay();
+
+      try {
+        // fetch from backend
+        const res = await fetch(`${API_BASE}/api/${platform}/fetch/${encodeURIComponent(username)}`);
+        console.log("Frontend fetch response:", res);
+        if (!res.ok) throw new Error("API request failed");
+        const data = await res.json();
+
+        if (platform === "instagram") {
+          renderInstagramData(data);
+        } else if (platform === "tiktok") {
+          renderTikTokData(data);
+        } else {
+          showError("Unsupported platform selected.");
+        }
+      } catch (err) {
+        console.error("Frontend fetch error:", err);
+        showError("Failed to fetch data from backend. Check API configuration.");
+      }
+    });
+
+    function renderInstagramData(data) {
+      if (!data || !data.data) return showError("No Instagram data found.");
+
+      const user = data.data.user;
+      document.getElementById("profileAvatar").src = user?.profile_pic_url || "";
+      document.getElementById("profileName").textContent = user?.full_name || "Unknown User";
+      document.getElementById("profileHandle").textContent = "@" + (user?.username || "");
+      document.getElementById("profileBio").textContent = user?.biography || "";
+      profileSection.classList.remove("hidden");
+
+      const posts = data.data.items || [];
+      if (posts.length === 0) return showError("No posts available or account is private.");
+
+      mediaList = posts.map((p) => ({
+        thumbUrl: p.image_versions2?.candidates?.[0]?.url || "",
+        caption: p.caption?.text || "",
+        sourceUrl: `https://www.instagram.com/p/${p.code}/`,
+      }));
+
+      mediaContainer.innerHTML = "";
+      mediaList.forEach((m) => {
+        const card = document.createElement("div");
+        card.className = "border rounded-lg overflow-hidden shadow-sm hover:shadow-md transition cursor-pointer";
+        card.innerHTML = `
+          <img src="${m.thumbUrl}" alt="media" class="object-cover w-full h-40" />
+          <div class="p-2 text-sm text-gray-600 truncate">${m.caption || "—"}</div>
+        `;
+        card.addEventListener("click", () => openPreview(m));
+        mediaContainer.appendChild(card);
+      });
+
+      mediaGrid.classList.remove("hidden");
+    }
+
+    function renderTikTokData(data) {
+      if (!data || !data.posts) return showError("No TikTok data found.");
+
+      document.getElementById("profileAvatar").src = data.posts[0]?.cover || "";
+      document.getElementById("profileName").textContent = data.username;
+      document.getElementById("profileHandle").textContent = "@" + data.username;
+      document.getElementById("profileBio").textContent = "TikTok profile preview";
+      profileSection.classList.remove("hidden");
+
+      mediaList = data.posts.map((v) => ({
+        thumbUrl: v.cover || "",
+        caption: v.description || "",
+        sourceUrl: v.video_url || "",
+      }));
+
+      mediaContainer.innerHTML = "";
+      mediaList.forEach((m) => {
+        const card = document.createElement("div");
+        card.className = "border rounded-lg overflow-hidden shadow-sm hover:shadow-md transition cursor-pointer";
+        card.innerHTML = `
+          <img src="${m.thumbUrl}" alt="media" class="object-cover w-full h-40" />
+          <div class="p-2 text-sm text-gray-600 truncate">${m.caption || "—"}</div>
+        `;
+        card.addEventListener("click", () => openPreview(m));
+        mediaContainer.appendChild(card);
+      });
+
+      mediaGrid.classList.remove("hidden");
+    }
+
+    function openPreview(media) {
+      document.getElementById("previewImage").src = media.thumbUrl;
+      document.getElementById("previewCaption").textContent = media.caption;
+      document.getElementById("openPlatformBtn").href = media.sourceUrl;
+      document.getElementById("previewModal").classList.remove("hidden");
+    }
+
+    function closeModal() {
+      document.getElementById("previewModal").classList.add("hidden");
+    }
+
+    function showError(msg) {
+      errorBox.textContent = msg;
+      errorBox.classList.remove("hidden");
+    }
+
+    function hideError() {
+      errorBox.classList.add("hidden");
+    }
+
+    function resetDisplay() {
+      profileSection.classList.add("hidden");
+      mediaGrid.classList.add("hidden");
+      mediaContainer.innerHTML = "";
+    }
+  </script>
+</body>
+</html>
