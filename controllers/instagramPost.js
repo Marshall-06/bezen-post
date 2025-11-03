@@ -3,29 +3,67 @@ const Post = require("../models/post"); // adjust path if needed
 const fs = require("fs");
 const path = require("path");
 const https = require("https");
-const { mkdir } = require("fs").promises;
 
 
-const agent = new https.Agent({ rejectUnauthorized: false }); // handles some TLS cases
+const agent = new https.Agent({ rejectUnauthorized: false });
 
-async function downloadFile(url, dest) {
-  const writer = fs.createWriteStream(dest);
+async function ensureDir(dirPath) {
+  await fs.promises.mkdir(dirPath, { recursive: true });
+}
+
+async function downloadFile(url, filePath) {
+  const writer = fs.createWriteStream(filePath);
   const response = await axios({
     url,
     method: "GET",
     responseType: "stream",
+    httpsAgent: agent,
   });
-  response.data.pipe(writer);
   return new Promise((resolve, reject) => {
+    response.data.pipe(writer);
     writer.on("finish", resolve);
     writer.on("error", reject);
   });
 }
 
-async function ensureDir(directory) {
-  if (!fs.existsSync(directory)) {
-    fs.mkdirSync(directory, { recursive: true });
+/**
+ * Updated media URL extractor for instagram120 API
+ */
+function extractMediaUrls(node) {
+  const urls = new Set();
+
+  if (!node) return [];
+
+  // Primary display URL
+  if (node.display_url) urls.add(node.display_url);
+  if (node.thumbnail_src) urls.add(node.thumbnail_src);
+
+  // For videos
+  if (node.is_video && node.video_url) urls.add(node.video_url);
+
+  // Alternative image sets
+  if (node.image_versions2?.candidates?.length) {
+    node.image_versions2.candidates.forEach((c) => c.url && urls.add(c.url));
   }
+
+  // For carousels
+  if (Array.isArray(node.carousel_media)) {
+    node.carousel_media.forEach((item) => {
+      if (item.image_versions2?.candidates?.length) {
+        item.image_versions2.candidates.forEach((c) => c.url && urls.add(c.url));
+      }
+      if (item.video_versions?.length) {
+        item.video_versions.forEach((v) => v.url && urls.add(v.url));
+      }
+    });
+  }
+
+  // Deep fallback: display_resources array
+  if (Array.isArray(node.display_resources)) {
+    node.display_resources.forEach((r) => r.src && urls.add(r.src));
+  }
+
+  return Array.from(urls);
 }
 
 const fetchInstagramPosts = async (req, res) => {
@@ -131,123 +169,100 @@ const downloadInstagramPosts = async (req, res) => {
   //   });
   // }
 
-const username = req.params.username.trim().toLowerCase();
-  const rootFolder = path.join(process.cwd(), "downloads", "instagram");
+const username = req.params.username?.trim().toLowerCase();
+  if (!username) {
+    return res.status(400).json({ message: "Username is required." });
+  }
+
+  const rootFolder = path.join(process.cwd(), "downloads", "instagram", username);
+  await ensureDir(rootFolder);
 
   try {
-    await ensureDir(rootFolder);
+    console.log(`📡 Fetching posts for ${username}...`);
 
-    // Step 1️⃣: Try main endpoint format
-    let response;
-    const baseURL = "https://instagram-scraper21.p.rapidapi.com/api/v1/posts";
-    try {
-      response = await axios.get(baseURL, {
+    const response = await axios.post(
+      "https://instagram120.p.rapidapi.com/api/instagram/posts",
+      { username },
+      {
         headers: {
-          "X-RapidAPI-Key": process.env.RAPIDAPI_KEY,
-          "X-RapidAPI-Host": "instagram-scraper21.p.rapidapi.com",
+          "x-rapidapi-key": process.env.RAPIDAPI_KEY,
+          "x-rapidapi-host": "instagram120.p.rapidapi.com",
+          "Content-Type": "application/json",
         },
-        params: { username_or_id_or_url: username },
         httpsAgent: agent,
-      });
-    } catch (err) {
-      // Step 2️⃣: Fallback to path format if API expects /posts/{username}
-      if (err.response?.data?.message?.includes("username is required")) {
-        const altURL = `${baseURL}/${username}`;
-        response = await axios.get(altURL, {
-          headers: {
-            "X-RapidAPI-Key": process.env.RAPIDAPI_KEY,
-            "X-RapidAPI-Host": "instagram-scraper21.p.rapidapi.com",
-          },
-          httpsAgent: agent,
-        });
-      } else {
-        throw err;
       }
+    );
+
+    const data = response.data;
+    if (!data?.result?.edges || !Array.isArray(data.result.edges)) {
+      console.error("⚠️ Unexpected Instagram API format:", data);
+      return res.status(500).json({
+        message: "Unexpected response from Instagram API",
+        error: data,
+      });
     }
 
-    console.log("Full API response:", JSON.stringify(response.data, null, 2));
-
-    // Step 3️⃣: Extract post data
-    const posts =
-      response.data?.data?.posts ||
-      response.data?.result ||
-      response.data?.data?.items ||
-      [];
-
-    if (!Array.isArray(posts) || posts.length === 0) {
-      console.warn(`⚠️ No posts found in API for '${username}'`);
-      return res
-        .status(404)
-        .json({ message: `No Instagram posts found for '${username}'.` });
-    }
-
-    console.log(`Found ${posts.length} posts for ${username}`);
+    const posts = data.result.edges.map((edge) => edge.node);
+    console.log(`✅ Found ${posts.length} posts for ${username}`);
 
     const results = [];
 
-    // Step 4️⃣: Process and store up to 10 posts
     for (const post of posts.slice(0, 10)) {
-      const postId =
-        post.id || post.pk || post.code || post.shortcode || Date.now().toString();
+      const postId = post.id || `${Date.now()}`;
       const folder = path.join(rootFolder, postId);
       await ensureDir(folder);
 
-      const imageUrl =
-        post.image_versions2?.candidates?.[0]?.url ||
-        post.thumbnail_url ||
-        post.display_url ||
-        post.image ||
-        null;
-
-      const videoUrl =
-        post.video_versions?.[0]?.url ||
-        post.video ||
-        post.video_url ||
-        null;
-
-      // Step 5️⃣: Download media files
-      if (imageUrl) {
-        const imgPath = path.join(folder, `${postId}.jpg`);
-        await downloadFile(imageUrl, imgPath);
+      const urls = extractMediaUrls(post);
+      if (!urls.length) {
+        console.warn(`⚠️ No media URL for post ${postId}`);
+        continue;
       }
 
-      if (videoUrl) {
-        const videoPath = path.join(folder, `${postId}.mp4`);
-        await downloadFile(videoUrl, videoPath);
-      }
+      const mediaUrl = urls[0]; // Choose first available URL
+      const fileExt = mediaUrl.includes(".mp4") ? ".mp4" : ".jpg";
+      const filePath = path.join(folder, `${postId}${fileExt}`);
+      await downloadFile(mediaUrl, filePath);
+      console.log(`✅ Downloaded ${fileExt.toUpperCase()} for ${postId}`);
 
-      // Step 6️⃣: Save or update database record
+      // Normalize caption text
+      let caption = "";
+      if (Array.isArray(post.edge_media_to_caption?.edges)) {
+        caption = post.edge_media_to_caption.edges
+          .map((e) => e.node?.text)
+          .filter(Boolean)
+          .join(" ");
+      } else if (typeof post.caption === "string") {
+        caption = post.caption;
+      } else if (typeof post.caption === "object" && post.caption?.text) {
+        caption = post.caption.text;
+      }
+      caption = String(caption || "").trim();
+
+      // Save to database
       const [saved, created] = await Post.findOrCreate({
         where: { platformPostId: postId },
         defaults: {
           username,
-          caption: post.caption?.text || post.caption || "",
-          mediaUrl: videoUrl || imageUrl || "",
-          thumbnail: imageUrl || null,
+          caption,
+          mediaUrl,
+          thumbnail: mediaUrl,
           source: "instagram",
-          postedAt: new Date(
-            (post.taken_at_timestamp || post.taken_at || post.created_at) * 1000 ||
-              Date.now()
-          ),
+          postedAt: new Date(post.taken_at_timestamp * 1000 || Date.now()),
         },
       });
 
       if (!created) {
         await saved.update({
-          caption: post.caption?.text || post.caption || "",
-          mediaUrl: videoUrl || imageUrl || "",
-          thumbnail: imageUrl || null,
-          postedAt: new Date(
-            (post.taken_at_timestamp || post.taken_at || post.created_at) * 1000 ||
-              Date.now()
-          ),
+          caption,
+          mediaUrl,
+          thumbnail: mediaUrl,
+          postedAt: new Date(post.taken_at_timestamp * 1000 || Date.now()),
         });
       }
 
-      results.push({ id: postId, imageUrl, videoUrl, folderPath: folder });
+      results.push({ id: postId, mediaUrl, folderPath: folder });
     }
 
-    // Step 7️⃣: Return final response
     return res.json({
       platform: "Instagram",
       username,
@@ -256,7 +271,7 @@ const username = req.params.username.trim().toLowerCase();
       posts: results,
     });
   } catch (err) {
-    console.error("Instagram Download Error:", err.response?.data || err.message);
+    console.error("❌ Instagram Download Error:", err.response?.data || err.message);
     return res.status(err.response?.status || 500).json({
       message: "Failed to download Instagram posts",
       error: err.response?.data || err.message,
